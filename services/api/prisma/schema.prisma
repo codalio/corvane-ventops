@@ -1,0 +1,236 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OPERATOR
+  SUPERVISOR
+  ENGINEER
+  ADMIN
+}
+
+enum Gas {
+  CH4
+  CO
+  NO2
+  O2
+  H2S
+  DPM
+}
+
+enum LevelStatus {
+  NORMAL
+  WARNING
+  ALARM
+  EVACUATE
+  REENTRY_PENDING
+}
+
+enum AlarmType {
+  GAS
+  SENSOR_FAULT
+  FAN_FAILURE
+  AIRFLOW_LOW
+}
+
+enum AlarmStatus {
+  OPEN
+  ACKNOWLEDGED
+  CLEARED
+}
+
+enum FanType {
+  MAIN
+  BOOSTER
+  AUXILIARY
+}
+
+enum FanStatus {
+  RUNNING
+  STOPPED
+  FAULT
+  UNKNOWN
+}
+
+enum CalibrationType {
+  BUMP
+  FULL
+}
+
+enum Shift {
+  DAY
+  NIGHT
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(OPERATOR)
+  phone        String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  acknowledged Alarm[]          @relation("AckBy")
+  cleared      Alarm[]          @relation("ClearedBy")
+  calibrations Calibration[]
+  shiftEntries ShiftLogEntry[]
+  audit        AuditEvent[]
+}
+
+model Level {
+  id        Int         @id @default(autoincrement())
+  code      String      @unique // e.g. L-1250
+  name      String
+  depthM    Int
+  status    LevelStatus @default(NORMAL)
+  statusAt  DateTime    @default(now())
+  minAirflowM3s Float   @default(20)
+
+  sensors   Sensor[]
+  fans      Fan[]
+  alarms    Alarm[]
+  shiftEntries ShiftLogEntry[]
+  equipment Equipment[]
+}
+
+model Sensor {
+  id               Int       @id @default(autoincrement())
+  code             String    @unique // e.g. CH4-1250-03
+  gas              Gas
+  levelId          Int
+  level            Level     @relation(fields: [levelId], references: [id])
+  location         String
+  mqttTopic        String    @unique
+  active           Boolean   @default(true)
+  lastValue        Float?
+  lastSeenAt       DateTime?
+  lastBumpTestAt   DateTime?
+  lastCalibratedAt DateTime?
+
+  readings     Reading[]
+  alarms       Alarm[]
+  calibrations Calibration[]
+}
+
+model Reading {
+  id       BigInt   @id @default(autoincrement())
+  sensorId Int
+  sensor   Sensor   @relation(fields: [sensorId], references: [id])
+  value    Float
+  ts       DateTime
+  // comma separated: UNCALIBRATED, OUT_OF_RANGE, BACKFILL
+  flags    String?
+
+  @@index([sensorId, ts])
+}
+
+model Threshold {
+  id        Int    @id @default(autoincrement())
+  gas       Gas    @unique
+  unit      String // "%vol" or "ppm" or "mg/m3"
+  warn      Float
+  alarm     Float
+  evacuate  Float?
+  // "ABOVE" for toxic/flammable gases, "BELOW" for oxygen
+  direction String @default("ABOVE")
+  updatedBy Int?
+  updatedAt DateTime @updatedAt
+}
+
+model Alarm {
+  id           Int         @id @default(autoincrement())
+  type         AlarmType
+  status       AlarmStatus @default(OPEN)
+  severity     String      // WARNING | ALARM | EVACUATE
+  levelId      Int
+  level        Level       @relation(fields: [levelId], references: [id])
+  sensorId     Int?
+  sensor       Sensor?     @relation(fields: [sensorId], references: [id])
+  fanId        Int?
+  fan          Fan?        @relation(fields: [fanId], references: [id])
+  gas          Gas?
+  peakValue    Float?
+  message      String
+  openedAt     DateTime    @default(now())
+  ackById      Int?
+  ackBy        User?       @relation("AckBy", fields: [ackById], references: [id])
+  ackAt        DateTime?
+  clearedById  Int?
+  clearedBy    User?       @relation("ClearedBy", fields: [clearedById], references: [id])
+  clearedAt    DateTime?
+  clearComment String?
+  cmmsWorkOrderId String?
+
+  @@index([status, levelId])
+}
+
+model Fan {
+  id           Int       @id @default(autoincrement())
+  code         String    @unique // e.g. MF-01
+  type         FanType
+  levelId      Int?
+  level        Level?    @relation(fields: [levelId], references: [id])
+  scadaTag     String    // historian point path
+  status       FanStatus @default(UNKNOWN)
+  setpointHz   Float     @default(50)
+  maxHz        Float     @default(60)
+  airflowM3s   Float?
+  lastStatusAt DateTime?
+
+  alarms Alarm[]
+}
+
+model Equipment {
+  id        Int     @id @default(autoincrement())
+  unitId    String  @unique // from tag board, e.g. LHD-14
+  kind      String  // LHD, TRUCK, BOLTER, LV
+  dieselKw  Float   @default(0)
+  levelId   Int?
+  level     Level?  @relation(fields: [levelId], references: [id])
+  updatedAt DateTime @updatedAt
+}
+
+model Calibration {
+  id            Int             @id @default(autoincrement())
+  sensorId      Int
+  sensor        Sensor          @relation(fields: [sensorId], references: [id])
+  type          CalibrationType
+  passed        Boolean
+  testGasValue  Float?
+  readValue     Float?
+  notes         String?
+  performedById Int
+  performedBy   User            @relation(fields: [performedById], references: [id])
+  performedAt   DateTime        @default(now())
+}
+
+model ShiftLogEntry {
+  id        Int      @id @default(autoincrement())
+  shiftDate DateTime @db.Date
+  shift     Shift
+  levelId   Int?
+  level     Level?   @relation(fields: [levelId], references: [id])
+  category  String   // GENERAL, VENTILATION, GAS, EQUIPMENT, SAFETY
+  text      String
+  authorId  Int
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model AuditEvent {
+  id       Int      @id @default(autoincrement())
+  userId   Int?
+  user     User?    @relation(fields: [userId], references: [id])
+  action   String
+  entity   String
+  entityId String
+  detail   Json?
+  at       DateTime @default(now())
+}

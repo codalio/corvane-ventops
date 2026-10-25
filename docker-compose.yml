@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ventops
+      POSTGRES_PASSWORD: ventops
+      POSTGRES_DB: ventops
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  broker:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  api:
+    build: ./services/api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://ventops:ventops@db:5432/ventops
+      REDIS_URL: redis://redis:6379
+    depends_on: [db, redis]
+    ports:
+      - "4000:4000"
+
+  ingest:
+    build: ./services/ingest
+    env_file: .env
+    environment:
+      MQTT_URL: mqtt://broker:1883
+      API_URL: http://api:4000
+      REDIS_URL: redis://redis:6379
+    depends_on: [broker, api]
+
+  notifier:
+    build: ./services/notifier
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      API_URL: http://api:4000
+    depends_on: [redis]
+
+  web:
+    build: ./web
+    environment:
+      VITE_API_URL: http://localhost:4000
+    depends_on: [api]
+    ports:
+      - "5173:5173"
+
+volumes:
+  pgdata:
